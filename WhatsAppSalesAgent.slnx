@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WhatsAppSalesAgent.API/WhatsAppSalesAgent.API.csproj" />
+    <Project Path="src/WhatsAppSalesAgent.Application/WhatsAppSalesAgent.Application.csproj" />
+    <Project Path="src/WhatsAppSalesAgent.Domain/WhatsAppSalesAgent.Domain.csproj" />
+    <Project Path="src/WhatsAppSalesAgent.Infrastructure/WhatsAppSalesAgent.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WhatsAppSalesAgent.Application.Tests/WhatsAppSalesAgent.Application.Tests.csproj" />
+    <Project Path="tests/WhatsAppSalesAgent.Domain.Tests/WhatsAppSalesAgent.Domain.Tests.csproj" />
+    <Project Path="tests/WhatsAppSalesAgent.Infrastructure.Tests/WhatsAppSalesAgent.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>
