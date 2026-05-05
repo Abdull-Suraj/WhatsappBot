@@ -1,0 +1,6 @@
+@WhatsAppSalesAgent.API_HostAddress = http://localhost:5119
+
+GET {{WhatsAppSalesAgent.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
