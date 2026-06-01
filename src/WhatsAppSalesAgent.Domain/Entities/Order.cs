@@ -1,130 +1,222 @@
+using WhatsAppSalesAgent.Domain.Common;
 using WhatsAppSalesAgent.Domain.Enums;
 using WhatsAppSalesAgent.Domain.Events;
 using WhatsAppSalesAgent.Domain.Exceptions;
 
 namespace WhatsAppSalesAgent.Domain.Entities;
 
-public class Order
+public class Order : BaseEntity
 {
-    public Guid Id { get; private set; }
+
+    public string OrderNumber { get; private set; }
+    public Guid BusinessId { get; private set; }
+    public Guid ProductId { get; private set; }
     public Guid CustomerId { get; private set; }
     public OrderStatus Status { get; private set; }
-    public decimal TotalAmount { get; private set; }
-    public DateTime CreatedAt { get; private set; }
-    public DateTime UpdatedAt { get; private set; }
-    public ICollection<OrderItem> OrderItems { get; private set; } = new List<OrderItem>();
-    public Payment? Payment { get; private set; }
-    public Delivery? Delivery { get; private set; }
+    //public int Quantity { get; private set; }
 
-    private readonly List<IDomainEvent> _domainEvents = new();
-    public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+ 
+    public OrderType OrderType { get; private set; }
+
+
+    // Amounts
+    public decimal Subtotal { get; private set; }
+    public decimal TotalAmount { get; private set; }
+
+
+    // Customer Information (snapshot at order time)
+    public string CustomerName { get; private set; }
+    public string CustomerEmail { get; private set; }
+    public string CustomerPhone { get; private set; }
+    public string ShippingAddress { get; private set; }
+    public string BillingAddress { get; private set; }
+    public string SpecialInstructions { get; private set; }
+
+    // Dates
+    public DateTime? PaidAt { get; private set; }
+    public DateTime? ConfirmedAt { get; private set; }
+    public DateTime? ProcessedAt { get; private set; }
+    public DateTime? CompletedAt { get; private set; }
+    public DateTime? CancelledAt { get; private set; }
+
+    // Cancellation
+    public string CancellationReason { get; private set; }
+
+    // Navigation Properties
+    public Business Business { get; private set; }
+    public Customer Customer { get; private set; }
+    private readonly List<OrderItem> _orderItems = new();
+    public IReadOnlyCollection<OrderItem> OrderItems => _orderItems.AsReadOnly();
+    public Payment Payment { get; private set; }
+    public Delivery Delivery { get; private set; }
+
 
     private Order() { }
 
-    public static Order Create(Guid customerId)
+    public Order(Guid businessId,
+        Guid customerId,
+        string customerName,
+        string customerPhone,
+        string shippingAddress,
+        List<OrderItem> items)
     {
-        if (customerId == Guid.Empty)
-            throw new ArgumentException("CustomerId cannot be empty.", nameof(customerId));
 
-        var order = new Order
+        OrderNumber = GenerateOrderNumber();
+        BusinessId = businessId;
+        CustomerId = customerId;
+        CustomerName = customerName;
+        CustomerPhone = customerPhone;
+        ShippingAddress = shippingAddress;
+        Status = OrderStatus.Pending;
+        OrderType = OrderType.Standard;
+
+        foreach (var item in items)
         {
-            Id = Guid.NewGuid(),
-            CustomerId = customerId,
-            Status = OrderStatus.Pending,
-            TotalAmount = 0m,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
-
-        order._domainEvents.Add(new OrderPlacedEvent(order.Id, customerId));
-        return order;
-    }
-
-    public void AddItem(Product product, int quantity)
-    {
-        ArgumentNullException.ThrowIfNull(product);
-
-        if (quantity <= 0)
-            throw new ArgumentOutOfRangeException(nameof(quantity), "Quantity must be positive.");
-
-        if (Status != OrderStatus.Pending)
-            throw new InvalidOrderStateException(Id, Status, "AddItem");
-
-        var existingItem = OrderItems.FirstOrDefault(i => i.ProductId == product.Id);
-        if (existingItem is not null)
-        {
-            existingItem.UpdateQuantity(existingItem.Quantity + quantity);
-        }
-        else
-        {
-            var item = OrderItem.Create(Id, product.Id, quantity, product.Price);
-            ((List<OrderItem>)OrderItems).Add(item);
+            _orderItems.Add(item);
+            Subtotal += item.TotalPrice;
         }
 
-        RecalculateTotal();
-        UpdatedAt = DateTime.UtcNow;
+        CalculateTotals();
     }
 
-    public void Confirm()
+    public void AddItem(OrderItem item)
     {
-        if (Status != OrderStatus.Pending)
-            throw new InvalidOrderStateException(Id, Status, "Confirm");
-
-        if (!OrderItems.Any())
-            throw new DomainException("Cannot confirm an order with no items.");
-
-        Status = OrderStatus.Confirmed;
-        UpdatedAt = DateTime.UtcNow;
+        _orderItems.Add(item);
+        Subtotal += item.TotalPrice;
+        CalculateTotals();
+        LastModifiedAt = DateTime.UtcNow;
     }
 
-    public void MarkAsPaid(Payment payment)
+    public void RemoveItem(Guid productId)
     {
-        ArgumentNullException.ThrowIfNull(payment);
+        var item = _orderItems.FirstOrDefault(i => i.ProductId == productId);
+        if (item != null)
+        {
+            _orderItems.Remove(item);
+            Subtotal -= item.TotalPrice;
+            CalculateTotals();
+            LastModifiedAt = DateTime.UtcNow;
+        }
+    }
 
-        if (Status != OrderStatus.Confirmed)
-            throw new InvalidOrderStateException(Id, Status, "MarkAsPaid");
+    private void CalculateTotals()
+    {
+
+        TotalAmount = Subtotal;
+    }
+
+    public void ConfirmPayment(Payment payment)
+    {
+        if (Status != OrderStatus.Pending && Status != OrderStatus.PaymentPending)
+            throw new DomainException("Order cannot be confirmed for payment");
 
         Payment = payment;
-        Status = OrderStatus.Paid;
-        UpdatedAt = DateTime.UtcNow;
-        _domainEvents.Add(new PaymentCompletedEvent(Id, CustomerId, payment.Id, TotalAmount));
+        Status = OrderStatus.PaymentReceived;
+        PaidAt = DateTime.UtcNow;
+        LastModifiedAt = DateTime.UtcNow;
+
+        AddDomainEvent(new OrderPaidEvent(Id, OrderNumber, TotalAmount));
     }
 
-    public void Dispatch(Delivery delivery)
+    public void ConfirmOrder()
     {
-        ArgumentNullException.ThrowIfNull(delivery);
+        if (Status != OrderStatus.PaymentReceived)
+            throw new DomainException("Order must be paid before confirmation");
 
-        if (Status != OrderStatus.Paid)
-            throw new InvalidOrderStateException(Id, Status, "Dispatch");
+        Status = OrderStatus.Confirmed;
+        ConfirmedAt = DateTime.UtcNow;
+        LastModifiedAt = DateTime.UtcNow;
 
-        Delivery = delivery;
-        Status = OrderStatus.Dispatched;
-        UpdatedAt = DateTime.UtcNow;
+        AddDomainEvent(new OrderConfirmedEvent(Id, OrderNumber));
+    }
+    public void StartProcessing()
+    {
+        if (Status != OrderStatus.Confirmed)
+            throw new DomainException("Order must be confirmed before processing");
+
+        Status = OrderStatus.Processing;
+        ProcessedAt = DateTime.UtcNow;
+        LastModifiedAt = DateTime.UtcNow;
+
+        AddDomainEvent(new OrderProcessingStartedEvent(Id, OrderNumber));
     }
 
-    public void MarkAsDelivered()
+    public void CompleteOrder()
     {
-        if (Status != OrderStatus.Dispatched)
-            throw new InvalidOrderStateException(Id, Status, "MarkAsDelivered");
+        if (Status != OrderStatus.Shipped && Status != OrderStatus.Delivered)
+            throw new DomainException("Order must be shipped before completion");
 
-        Status = OrderStatus.Delivered;
-        UpdatedAt = DateTime.UtcNow;
+        Status = OrderStatus.Completed;
+        CompletedAt = DateTime.UtcNow;
+        LastModifiedAt = DateTime.UtcNow;
+
+        AddDomainEvent(new OrderCompletedEvent(Id, OrderNumber));
     }
 
-    public void Cancel(string reason)
+    public void CancelOrder(string reason)
     {
-        if (Status is OrderStatus.Delivered or OrderStatus.Dispatched)
-            throw new InvalidOrderStateException(Id, Status, "Cancel");
+        if (Status == OrderStatus.Completed || Status == OrderStatus.Delivered)
+            throw new DomainException("Cannot cancel completed or delivered order");
 
         Status = OrderStatus.Cancelled;
-        UpdatedAt = DateTime.UtcNow;
-        _domainEvents.Add(new OrderCancelledEvent(Id, CustomerId, reason));
+        CancellationReason = reason;
+        CancelledAt = DateTime.UtcNow;
+        LastModifiedAt = DateTime.UtcNow;
+
+
+        AddDomainEvent(new OrderCancelledEvent(Id, OrderNumber, reason));
     }
 
-    public void ClearDomainEvents() => _domainEvents.Clear();
-
-    private void RecalculateTotal()
+    public void RequestPayment()
     {
-        TotalAmount = OrderItems.Sum(i => i.UnitPrice * i.Quantity);
+        if (Status != OrderStatus.Pending)
+            throw new DomainException("Order must be pending for payment request");
+
+        Status = OrderStatus.PaymentPending;
+        LastModifiedAt = DateTime.UtcNow;
+
+        AddDomainEvent(new PaymentRequestedEvent(Id, OrderNumber, TotalAmount));
     }
+
+    private static string GenerateOrderNumber()
+    {
+        return $"ORD-{DateTime.Now:yyyyMMdd}-{Guid.NewGuid():N}"[..8].ToUpper();
+    }
+
+    public void UpdateShippingAddress(string address)
+    {
+        if (Status != OrderStatus.Pending && Status != OrderStatus.PaymentPending)
+            throw new DomainException("Shipping address can only be updated before payment");
+
+        ShippingAddress = address;
+        LastModifiedAt = DateTime.UtcNow;
+    }
+
+    public decimal GetRemainingBalance()
+    {
+        if (Payment?.AmountPaid >= TotalAmount) return 0;
+        return TotalAmount - (Payment?.AmountPaid ?? 0);
+    }
+    // method for updating wallet balance if successful 
+}
+public enum OrderStatus
+{
+    Pending,           // Initial state
+    PaymentPending,    // Awaiting payment
+    PaymentReceived,   // Payment confirmed
+    Confirmed,         // Order confirmed by business
+    Processing,        // Being prepared
+    Shipped,           // Out for delivery
+    Delivered,         // Customer received
+    Completed,         // Order completed
+    Cancelled,         // Cancelled
+    Refunded           // Refunded
+}
+
+public enum OrderType
+{
+    Standard,
+    Express,
+    Scheduled,
+    Pickup
 }
